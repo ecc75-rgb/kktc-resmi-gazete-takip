@@ -1,0 +1,46 @@
+name: KKTC Resmi Gazete Takibi
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      send_test:
+        description: "Mevcut son sayi icin test Telegram mesaji gonder"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kktc-resmi-gazete-monitor
+  cancel-in-progress: false
+
+jobs:
+  kontrol:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Repoyu al
+        uses: actions/checkout@v4
+
+      - name: Basimevi sitesini kontrol et
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SEND_TEST: ${{ inputs.send_test || 'false' }}
+        run: python3 monitor.py
+
+      - name: Son gorulen sayiyi kaydet
+        run: |
+          if git diff --quiet -- state.json; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state.json
+          git commit -m "Son Resmi Gazete durumunu guncelle"
+          git push

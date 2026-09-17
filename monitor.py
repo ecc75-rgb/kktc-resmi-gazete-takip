@@ -30,6 +30,10 @@ TAG_RE = re.compile(r"<[^>]+>")
 SPACE_RE = re.compile(r"\s+")
 
 
+class SiteUnavailable(RuntimeError):
+    """İzlenen site geçici olarak cevap vermediğinde kullanılır."""
+
+
 def request(url: str, data: bytes | None = None, timeout: int = 40) -> bytes:
     headers = {"User-Agent": USER_AGENT}
     if data is not None:
@@ -44,7 +48,7 @@ def request(url: str, data: bytes | None = None, timeout: int = 40) -> bytes:
             last_error = exc
             if attempt < 2:
                 time.sleep(3 * (attempt + 1))
-    raise RuntimeError(f"İstek başarısız: {url} ({last_error})")
+    raise SiteUnavailable(f"İstek başarısız: {url} ({last_error})")
 
 
 def clean_text(raw: str) -> str:
@@ -143,14 +147,26 @@ def issue_message(issue: dict[str, str], test: bool = False) -> str:
 
 
 def main() -> int:
-    issues = fetch_issues()
-    latest = issues[0]
     state = load_state()
 
     if os.environ.get("SEND_TEST", "").lower() == "true":
-        telegram_send(issue_message(latest, test=True))
-        print(f"Test bildirimi gönderildi: {latest['number']} — {latest['date']}")
+        saved_issue = {
+            "number": str(state.get("last_number", "—")),
+            "date": str(state.get("last_date", "—")),
+            "url": str(state.get("last_url", SITE_URL)),
+            "summary": "",
+        }
+        telegram_send(issue_message(saved_issue, test=True))
+        print("Test bildirimi tüm kayıtlı Telegram alıcılarına gönderildi.")
         return 0
+
+    try:
+        issues = fetch_issues()
+    except SiteUnavailable as exc:
+        print(f"UYARI: Basımevi sitesi geçici olarak cevap vermedi. Bir sonraki kontrolde yeniden denenecek. ({exc})")
+        return 0
+
+    latest = issues[0]
 
     old_key = (str(state.get("last_number", "")), str(state.get("last_date", "")))
     latest_key = (latest["number"], latest["date"])

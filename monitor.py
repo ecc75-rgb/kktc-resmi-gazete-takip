@@ -34,19 +34,24 @@ class SiteUnavailable(RuntimeError):
     """İzlenen site geçici olarak cevap vermediğinde kullanılır."""
 
 
-def request(url: str, data: bytes | None = None, timeout: int = 40) -> bytes:
+def request(
+    url: str,
+    data: bytes | None = None,
+    timeout: int = 40,
+    attempts: int = 3,
+) -> bytes:
     headers = {"User-Agent": USER_AGENT}
     if data is not None:
         headers["Content-Type"] = "application/x-www-form-urlencoded"
     req = urllib.request.Request(url, data=data, headers=headers)
     last_error: Exception | None = None
-    for attempt in range(3):
+    for attempt in range(attempts):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as response:
                 return response.read()
         except (urllib.error.URLError, TimeoutError) as exc:
             last_error = exc
-            if attempt < 2:
+            if attempt < attempts - 1:
                 time.sleep(3 * (attempt + 1))
     raise SiteUnavailable(f"İstek başarısız: {url} ({last_error})")
 
@@ -68,7 +73,7 @@ def extract_summary(page: str, match: re.Match[str], number: str, issue_date: st
 
 
 def fetch_issues() -> list[dict[str, str]]:
-    page = request(SITE_URL).decode("utf-8", errors="replace")
+    page = request(SITE_URL, timeout=20, attempts=1).decode("utf-8", errors="replace")
     issues: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
 
@@ -160,10 +165,29 @@ def main() -> int:
         print("Test bildirimi tüm kayıtlı Telegram alıcılarına gönderildi.")
         return 0
 
-    try:
-        issues = fetch_issues()
-    except SiteUnavailable as exc:
-        print(f"UYARI: Basımevi sitesi geçici olarak cevap vermedi. Bir sonraki kontrolde yeniden denenecek. ({exc})")
+    issues: list[dict[str, str]] | None = None
+    last_site_error: SiteUnavailable | None = None
+
+    for burst_attempt in range(6):
+        try:
+            issues = fetch_issues()
+            if burst_attempt:
+                print(f"Basımevi sitesi {burst_attempt + 1}. hızlı denemede yeniden erişilebilir oldu.")
+            break
+        except SiteUnavailable as exc:
+            last_site_error = exc
+            if burst_attempt < 5:
+                print(
+                    f"UYARI: Site cevap vermedi. 45 saniye sonra hızlı tekrar "
+                    f"denenecek ({burst_attempt + 1}/6)."
+                )
+                time.sleep(45)
+
+    if issues is None:
+        print(
+            "UYARI: Basımevi sitesi 5 dakikalık hızlı takip boyunca cevap vermedi. "
+            f"Sonraki planlı kontrolde yeniden denenecek. ({last_site_error})"
+        )
         return 0
 
     latest = issues[0]

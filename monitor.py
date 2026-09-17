@@ -104,21 +104,28 @@ def save_state(state: dict[str, Any]) -> None:
 
 def telegram_send(message: str) -> None:
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-    if not token or not chat_id:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN veya TELEGRAM_CHAT_ID GitHub Secret olarak ayarlanmamış.")
+    chat_ids: list[str] = []
+
+    for env_name in ("TELEGRAM_CHAT_ID", "TELEGRAM_CHAT_ID_2"):
+        chat_id = os.environ.get(env_name, "").strip()
+        if chat_id and chat_id not in chat_ids:
+            chat_ids.append(chat_id)
+
+    if not token or not chat_ids:
+        raise RuntimeError("Telegram bot tokeni veya alıcı Chat ID bilgisi ayarlanmamış.")
 
     endpoint = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = urllib.parse.urlencode(
-        {
-            "chat_id": chat_id,
-            "text": message,
-            "disable_web_page_preview": "true",
-        }
-    ).encode()
-    response = json.loads(request(endpoint, data=payload).decode("utf-8"))
-    if not response.get("ok"):
-        raise RuntimeError(f"Telegram bildirimi başarısız: {response}")
+    for chat_id in chat_ids:
+        payload = urllib.parse.urlencode(
+            {
+                "chat_id": chat_id,
+                "text": message,
+                "disable_web_page_preview": "true",
+            }
+        ).encode()
+        response = json.loads(request(endpoint, data=payload).decode("utf-8"))
+        if not response.get("ok"):
+            raise RuntimeError(f"{chat_id} alıcısına Telegram bildirimi başarısız: {response}")
 
 
 def issue_message(issue: dict[str, str], test: bool = False) -> str:

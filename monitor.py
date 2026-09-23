@@ -40,7 +40,11 @@ def request(
     timeout: int = 40,
     attempts: int = 3,
 ) -> bytes:
-    headers = {"User-Agent": USER_AGENT}
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
     if data is not None:
         headers["Content-Type"] = "application/x-www-form-urlencoded"
     req = urllib.request.Request(url, data=data, headers=headers)
@@ -73,7 +77,9 @@ def extract_summary(page: str, match: re.Match[str], number: str, issue_date: st
 
 
 def fetch_issues() -> list[dict[str, str]]:
-    page = request(SITE_URL, timeout=20, attempts=1).decode("utf-8", errors="replace")
+    cache_buster = int(time.time())
+    page_url = f"{SITE_URL}?_monitor={cache_buster}"
+    page = request(page_url, timeout=20, attempts=1).decode("utf-8", errors="replace")
     issues: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
 
@@ -137,6 +143,21 @@ def telegram_send(message: str) -> None:
             raise RuntimeError(f"{chat_id} alıcısına Telegram bildirimi başarısız: {response}")
 
 
+def issue_order(issue: dict[str, str]) -> tuple[int, int]:
+    """Yayınları yıl ve sayı ile sıralar; sitenin eski liste göstermesine karşı kullanılır."""
+    date_match = re.search(r"(\d{4})$", issue.get("date", ""))
+    if not date_match:
+        raise RuntimeError(f"Geçersiz Resmî Gazete tarihi: {issue.get('date')}")
+    return int(date_match.group(1)), int(issue["number"])
+
+
+def state_order(state: dict[str, Any]) -> tuple[int, int]:
+    date_match = re.search(r"(\d{4})$", str(state.get("last_date", "")))
+    if not date_match:
+        raise RuntimeError(f"Geçersiz kayıt tarihi: {state.get('last_date')}")
+    return int(date_match.group(1)), int(state["last_number"])
+
+
 def issue_message(issue: dict[str, str], test: bool = False) -> str:
     heading = "✅ Test başarılı" if test else "📰 Yeni KKTC Resmî Gazete yayımlandı"
     lines = [
@@ -191,21 +212,39 @@ def main() -> int:
         return 0
 
     latest = issues[0]
+    old_order = state_order(state)
+    latest_order = issue_order(latest)
 
-    old_key = (str(state.get("last_number", "")), str(state.get("last_date", "")))
-    latest_key = (latest["number"], latest["date"])
-
-    if latest_key != old_key:
-        old_index = next(
-            (
-                index
-                for index, issue in enumerate(issues)
-                if (issue["number"], issue["date"]) == old_key
-            ),
-            None,
+    if latest_order < old_order:
+        print(
+            "UYARI: Basımevi sitesi eski bir liste gösteriyor; kayıt geriye alınmadı. "
+            f"Kayıtlı son sayı: {state['last_number']}, sitede görünen: {latest['number']}."
         )
-        new_issues = issues[:old_index] if old_index is not None else [latest]
-        for issue in reversed(new_issues):
+    elif latest_order == old_order:
+        if (
+            latest["date"] != str(state.get("last_date", ""))
+            or latest["url"] != str(state.get("last_url", ""))
+        ):
+            state.update(
+                {
+                    "last_date": latest["date"],
+                    "last_url": latest["url"],
+                    "updated_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                }
+            )
+            print(f"Sayı {latest['number']} için tarih/bağlantı bilgisi sessizce güncellendi.")
+        else:
+            print(f"Yeni sayı yok. Son sayı: {latest['number']} — {latest['date']}")
+    else:
+        new_issues = [
+            issue
+            for issue in issues
+            if old_order < issue_order(issue) <= latest_order
+        ]
+        if not new_issues:
+            new_issues = [latest]
+
+        for issue in sorted(new_issues, key=issue_order):
             telegram_send(issue_message(issue))
             print(f"Bildirim gönderildi: {issue['number']} — {issue['date']}")
 
@@ -217,8 +256,6 @@ def main() -> int:
                 "updated_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
             }
         )
-    else:
-        print(f"Yeni sayı yok. Son sayı: {latest['number']} — {latest['date']}")
 
     heartbeat = date.fromisoformat(state.get("heartbeat_at", "1970-01-01"))
     if (date.today() - heartbeat).days >= 45:

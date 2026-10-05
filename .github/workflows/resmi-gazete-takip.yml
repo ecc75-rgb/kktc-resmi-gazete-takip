@@ -1,6 +1,11 @@
 name: KKTC Resmi Gazete Takibi
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "monitor.py"
+      - ".github/workflows/resmi-gazete-takip.yml"
   schedule:
     - cron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"
   workflow_dispatch:

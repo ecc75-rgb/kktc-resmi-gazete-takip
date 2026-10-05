@@ -7,6 +7,7 @@ import html
 import json
 import os
 import re
+import signal
 import sys
 import time
 import urllib.error
@@ -34,6 +35,11 @@ class SiteUnavailable(RuntimeError):
     """İzlenen site geçici olarak cevap vermediğinde kullanılır."""
 
 
+def _request_deadline_exceeded(_signum: int, _frame: Any) -> None:
+    """Bir HTTP isteğinin kesin süre sınırını aşmasını engeller."""
+    raise TimeoutError("HTTP isteği kesin süre sınırını aştı")
+
+
 def request(
     url: str,
     data: bytes | None = None,
@@ -50,6 +56,8 @@ def request(
     req = urllib.request.Request(url, data=data, headers=headers)
     last_error: Exception | None = None
     for attempt in range(attempts):
+        previous_handler = signal.signal(signal.SIGALRM, _request_deadline_exceeded)
+        signal.setitimer(signal.ITIMER_REAL, timeout)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as response:
                 return response.read()
@@ -57,6 +65,9 @@ def request(
             last_error = exc
             if attempt < attempts - 1:
                 time.sleep(3 * (attempt + 1))
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_handler)
     raise SiteUnavailable(f"İstek başarısız: {url} ({last_error})")
 
 
@@ -79,7 +90,7 @@ def extract_summary(page: str, match: re.Match[str], number: str, issue_date: st
 def fetch_issues() -> list[dict[str, str]]:
     cache_buster = int(time.time())
     page_url = f"{SITE_URL}?_monitor={cache_buster}"
-    page = request(page_url, timeout=20, attempts=1).decode("utf-8", errors="replace")
+    page = request(page_url, timeout=12, attempts=1).decode("utf-8", errors="replace")
     issues: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
 
@@ -189,7 +200,7 @@ def main() -> int:
     issues: list[dict[str, str]] | None = None
     last_site_error: SiteUnavailable | None = None
 
-    for burst_attempt in range(6):
+    for burst_attempt in range(4):
         try:
             issues = fetch_issues()
             if burst_attempt:
@@ -197,16 +208,16 @@ def main() -> int:
             break
         except SiteUnavailable as exc:
             last_site_error = exc
-            if burst_attempt < 5:
+            if burst_attempt < 3:
                 print(
-                    f"UYARI: Site cevap vermedi. 45 saniye sonra hızlı tekrar "
-                    f"denenecek ({burst_attempt + 1}/6)."
+                    f"UYARI: Site cevap vermedi. 25 saniye sonra hızlı tekrar "
+                    f"denenecek ({burst_attempt + 1}/4)."
                 )
-                time.sleep(45)
+                time.sleep(25)
 
     if issues is None:
         print(
-            "UYARI: Basımevi sitesi 5 dakikalık hızlı takip boyunca cevap vermedi. "
+            "UYARI: Basımevi sitesi kısa hızlı takip boyunca cevap vermedi. "
             f"Sonraki planlı kontrolde yeniden denenecek. ({last_site_error})"
         )
         return 0

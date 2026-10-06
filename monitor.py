@@ -95,7 +95,9 @@ def fetch_issues() -> list[dict[str, str]]:
     seen: set[tuple[str, str]] = set()
 
     for match in PDF_LINK_RE.finditer(page):
-        number = match.group("number")
+        href = html.unescape(match.group("href"))
+        pdf_number_match = re.search(r"/(\d{1,4})\.pdf(?:\?|$)", href, re.IGNORECASE)
+        number = pdf_number_match.group(1) if pdf_number_match else match.group("number")
         issue_date = match.group("date")
         key = (number, issue_date)
         if key in seen:
@@ -105,7 +107,7 @@ def fetch_issues() -> list[dict[str, str]]:
             {
                 "number": number,
                 "date": issue_date,
-                "url": urllib.parse.urljoin(SITE_URL, html.unescape(match.group("href"))),
+                "url": urllib.parse.urljoin(SITE_URL, href),
                 "summary": extract_summary(page, match, number, issue_date),
             }
         )
